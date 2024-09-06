@@ -66,21 +66,6 @@ WeatherBot.command('current', async (ctx) => {
         await ctx.reply(weather.join('\n'));
       }
     }
-
-    // if (user && user.coordinates) {
-    //   const data = await getData(user.coordinates.longitude, user.coordinates.latitude);
-
-    //   if (data) {
-    //     const weather = getWeather(data);
-    //     await ctx.reply(weather.join('\n'));
-    //   }
-    // } else if (!user.coordinates) {
-    //   await ctx.reply('Пожалуйста, для начала поделитесь вашей геолокацией.');
-    // } else {
-    //   await ctx.reply(
-    //     'Чтобы получить погоду на текущее время, нужно зарегистрироваться через команду /register',
-    //   );
-    // }
   } else {
     await ctx.reply('База данных сейчас не доступна, попробуйте позже...');
   }
