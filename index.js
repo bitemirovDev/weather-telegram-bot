@@ -1,200 +1,213 @@
 require('dotenv').config();
-const { Bot, GrammyError, HttpError, InlineKeyboard, Keyboard } = require('grammy');
-const axios = require('axios');
+const { Bot, GrammyError, HttpError, Keyboard, session } = require('grammy');
 const moment = require('moment-timezone');
+const cron = require('node-cron');
 
-const { connect } = require('./db');
+// modules
+const { connect } = require('./modules/db');
+const { getWeather } = require('./modules/weather');
+const { getData } = require('./modules/api');
+
+// Подключение к базе данных
+let db;
+async function initializeDb() {
+  db = await connect();
+}
+
+// Инициализируем базу данных при запуске
+initializeDb().catch((err) => {
+  console.error('Не удалось подключиться к базе данных:', err);
+  process.exit(1); // Завершаем процесс, если подключение не удалось
+});
 
 // Bot
 const WeatherBot = new Bot(process.env.BOT_API_KEY);
+WeatherBot.use(session({ initial: () => ({ isRegistering: false }) }));
 
-const weatherStatuses = [
-  {
-    code: 200,
-    description: 'Thunderstorm with light rain',
-    descriptionRus: 'Гроза с небольшим дождём',
-  },
-  { code: 201, description: 'Thunderstorm with rain', descriptionRus: 'Гроза с дождём' },
-  {
-    code: 202,
-    description: 'Thunderstorm with heavy rain',
-    descriptionRus: 'Гроза с сильным дождем',
-  },
-  {
-    code: 230,
-    description: 'Thunderstorm with light drizzle',
-    descriptionRus: 'Гроза с небольшим моросящим дождём',
-  },
-  { code: 231, description: 'Thunderstorm with drizzle', descriptionRus: 'Гроза с моросью' },
-  {
-    code: 232,
-    description: 'Thunderstorm with heavy drizzle',
-    descriptionRus: 'Гроза с сильным моросящим дождем',
-  },
-  { code: 233, description: 'Thunderstorm with Hail', descriptionRus: 'Гроза с градом' },
-  { code: 300, description: 'Light Drizzle', descriptionRus: 'Легкий дождь' },
-  { code: 301, description: 'Drizzle', descriptionRus: 'Морось' },
-  { code: 302, description: 'Heavy Drizzle', descriptionRus: 'Сильный дождь' },
-  { code: 500, description: 'Light Rain', descriptionRus: 'Легкий дождь' },
-  { code: 501, description: 'Moderate Rain', descriptionRus: 'Умеренный дождь' },
-  { code: 502, description: 'Heavy Rain', descriptionRus: 'Сильный дождь' },
-  { code: 511, description: 'Freezing rain', descriptionRus: 'Ледяной дождь' },
-  { code: 520, description: 'Light shower rain', descriptionRus: 'Легкий ливень' },
-  { code: 521, description: 'Shower rain', descriptionRus: 'Ливневый дождь' },
-  { code: 522, description: 'Heavy shower rain', descriptionRus: 'Сильный ливень' },
-  { code: 600, description: 'Light snow', descriptionRus: 'Легкий снег' },
-  { code: 601, description: 'Snow', descriptionRus: 'Снег' },
-  { code: 602, description: 'Heavy Snow', descriptionRus: 'Сильный снег' },
-  { code: 610, description: 'Mix snow/rain', descriptionRus: 'Микс снега и дождя' },
-  { code: 611, description: 'Sleet', descriptionRus: 'Мокрый снег' },
-  { code: 612, description: 'Heavy sleet', descriptionRus: 'Сильный мокрый снег' },
-  { code: 621, description: 'Snow shower', descriptionRus: 'Снегопад' },
-  { code: 622, description: 'Heavy snow shower', descriptionRus: 'Сильный снегопад' },
-  { code: 623, description: 'Flurries', descriptionRus: 'Снежные хлопья' },
-  { code: 700, description: 'Mist', descriptionRus: 'Мелкий туман' },
-  { code: 711, description: 'Smoke', descriptionRus: 'Загрязненный воздух' },
-  { code: 721, description: 'Haze', descriptionRus: 'Смог' },
-  { code: 731, description: 'Sand/dust', descriptionRus: 'Песчаная буря' },
-  { code: 741, description: 'Fog', descriptionRus: 'Туман' },
-  { code: 751, description: 'Freezing Fog', descriptionRus: 'Морозный туман' },
-  { code: 800, description: 'Clear sky', descriptionRus: 'Ясно' },
-  { code: 801, description: 'Few clouds', descriptionRus: 'Немного облачно' },
-  { code: 802, description: 'Scattered clouds', descriptionRus: 'Переменная облачность' },
-  { code: 803, description: 'Broken clouds', descriptionRus: 'Облачно с прояснениями' },
-  { code: 804, description: 'Overcast clouds', descriptionRus: 'Сплошная облачность' },
-  { code: 900, description: 'Unknown Precipitation', descriptionRus: 'Неопределенные осадки' },
-];
-
-function getWeatherDescriptionRus(code) {
-  const weatherStatus = weatherStatuses.find((status) => status.code === code);
-  return weatherStatus ? weatherStatus.descriptionRus : 'Неизвестный статус погоды';
-}
-
+// Список команд
 WeatherBot.api.setMyCommands([
   { command: 'start', description: 'Запустить бота' },
-  { command: 'weather', description: 'Поделиться геолокацией' },
-  { command: 'register', description: 'Зарегистрироваться для ежедневной рассылки' },
+  { command: 'register', description: 'Регистрация' },
+  { command: 'current', description: 'Получить информацию о погоде на данный момент' },
+  { command: 'subscribe', description: 'Подписаться на ежедневную рассылку прогноза погоды' },
+  { command: 'unsubscribe', description: 'Отписаться от ежедневной рассылки прогноза погоды' },
 ]);
-
+// Запуск бота
 WeatherBot.command('start', async (ctx) => {
   const commands = `
-    /weather - Получение текущей погоды по вашему местоположению
-    /register - Зарегистрироваться для ежедневной рассылки в 08:00 утра каждого дня
+  /register - регистрация
+  /current - получить информацию о погоде на данный момент
+  /subscribe - подписаться на ежедневную рассылку прогноза погоды
+  /unsubscribe - отписаться от ежедневной рассылки прогноза погоды
   `;
 
-  await ctx.reply(`Привет ${ctx.from.first_name}, меня зовут BitWeather и я могу:
-    ${commands}
+  await ctx.reply(`Привет ${ctx.from.first_name}, вот список моих возможностей:
+   ${commands}
   `);
 });
+// Получение погоды на текущее время
+WeatherBot.command('current', async (ctx) => {
+  // Отправляем информацию о текущей погоде если пользователь ввел команду /current
+  if (db) {
+    const usersCollection = db.collection('users');
+    const user = await usersCollection.findOne({ tg_id: ctx.from.id });
 
-WeatherBot.command('weather', async (ctx) => {
-  const keyboard = new Keyboard().requestLocation('Поделиться локацией').resized().oneTime();
+    if (!user) {
+      await ctx.reply(
+        'Чтобы получить погоду на текущее время, нужно зарегистрироваться через команду /register',
+      );
+    } else if (user.coordinates === null || user.coordinates === undefined) {
+      await ctx.reply('Пожалуйста, для начала поделитесь вашей геолокацией.');
+    } else {
+      const data = await getData(user.coordinates.longitude, user.coordinates.latitude);
 
-  await ctx.reply('Отправьте вашу геолокацию', {
-    reply_markup: keyboard,
-  });
-});
+      if (data) {
+        const weather = getWeather(data);
+        await ctx.reply(weather.join('\n'));
+      }
+    }
 
-WeatherBot.command('register', async (ctx) => {
-  const db = await connect();
-  const users = db.collection('users');
-  const user = await users.findOne({ tg_id: ctx.from.id });
+    // if (user && user.coordinates) {
+    //   const data = await getData(user.coordinates.longitude, user.coordinates.latitude);
 
-  if (!user) {
-    await users.insertOne({
-      tg_id: ctx.from.id,
-      tg_chat_id: ctx.chat.id,
-      username: ctx.from.username,
-      first_name: ctx.from.first_name,
-      registerDate: new Date(),
-    });
-
-    // Создаем клавиатуру для запроса геолокации
-    const keyboard = new Keyboard().requestLocation('Поделиться локацией').resized().oneTime();
-
-    await ctx.reply(
-      'Вы успешно зарегистрировались на ежедневную рассылку погоды. Пожалуйста, поделитесь вашей геолокацией:',
-      {
-        reply_markup: keyboard,
-      },
-    );
+    //   if (data) {
+    //     const weather = getWeather(data);
+    //     await ctx.reply(weather.join('\n'));
+    //   }
+    // } else if (!user.coordinates) {
+    //   await ctx.reply('Пожалуйста, для начала поделитесь вашей геолокацией.');
+    // } else {
+    //   await ctx.reply(
+    //     'Чтобы получить погоду на текущее время, нужно зарегистрироваться через команду /register',
+    //   );
+    // }
   } else {
-    await ctx.reply(
-      'Вы уже зарегистрировались на ежедневную рассылку погоды. Ожидайте уведомления)))',
-    );
+    await ctx.reply('База данных сейчас не доступна, попробуйте позже...');
   }
 });
+// Регистрация пользователя
+WeatherBot.command('register', async (ctx) => {
+  if (db) {
+    const usersCollection = db.collection('users');
+    const user = await usersCollection.findOne({ tg_id: ctx.from.id });
 
+    if (!user) {
+      await usersCollection.insertOne({
+        tg_id: ctx.from.id,
+        tg_chat_id: ctx.chat.id,
+        username: ctx.from.username,
+        first_name: ctx.from.first_name,
+        registerDate: new Date(),
+        subscription: false,
+      });
+
+      ctx.session.isRegistering = true;
+
+      // Создаем клавиатуру для запроса геолокации
+      const keyboard = new Keyboard().requestLocation('Поделиться локацией').resized().oneTime();
+
+      await ctx.reply('Вы успешно зарегистрировались. Пожалуйста, поделитесь вашей геолокацией.', {
+        reply_markup: keyboard,
+      });
+    } else {
+      await ctx.reply('Вы уже зарегистрированы.');
+    }
+  } else {
+    await ctx.reply('База данных сейчас не доступна, попробуйте позже...');
+  }
+});
+// Подписка на рассылку
+WeatherBot.command('subscribe', async (ctx) => {
+  if (db) {
+    const usersCollection = db.collection('users');
+    const user = await usersCollection.findOne({ tg_id: ctx.from.id });
+
+    if (!user) {
+      await ctx.reply(
+        'Вы не зарегистрированы, пожалуйста, для начала используйте команду /register',
+      );
+    } else if (user.subscription) {
+      await ctx.reply('Вы уже подписались на ежедневную рассылку. Ожидайте уведомления в 08:00.');
+    } else {
+      await usersCollection.updateOne(
+        { tg_id: ctx.from.id },
+        {
+          $set: {
+            subscription: true,
+          },
+        },
+      );
+      await ctx.reply(
+        'Вы успешно подписались на ежедневную рассылку. Ожидайте уведомления в 08:00.',
+      );
+    }
+  } else {
+    await ctx.reply('База данных сейчас не доступна, попробуйте позже...');
+  }
+});
+// Отписка от рассылку
+WeatherBot.command('unsubscribe', async (ctx) => {
+  if (db) {
+    const usersCollection = db.collection('users');
+    const user = await usersCollection.findOne({ tg_id: ctx.from.id });
+
+    if (!user) {
+      await ctx.reply(
+        'Вы не зарегистрированы, пожалуйста, для начала используйте команду /register',
+      );
+    } else if (!user.subscription) {
+      await ctx.reply('Вы не подписаны на ежедневную рассылку.');
+    } else {
+      await usersCollection.updateOne({ tg_id: ctx.from.id }, { $set: { subscription: false } });
+      await ctx.reply(
+        'Вы успешно отписались от ежедневной рассылки. Ежедневные уведомления приходить не будут.',
+      );
+    }
+  } else {
+    await ctx.reply('База данных сейчас не доступна, попробуйте позже...');
+  }
+});
+// Слушатель отправления локации пользователем
 WeatherBot.on(':location', async (ctx) => {
-  const db = await connect();
-  const usersCollection = db.collection('users');
+  if (ctx.session.isRegistering && db) {
+    const usersCollection = db.collection('users');
 
-  const user = await usersCollection.findOne({ tg_id: ctx.from.id });
+    // Добавляем координаты пользователя в базу
+    const userTimezone = await getData(
+      ctx.message.location.longitude,
+      ctx.message.location.latitude,
+    ).then((res) => res.timezone);
 
-  if (user) {
-    const { latitude, longitude } = ctx.message.location;
     await usersCollection.updateOne(
       { tg_id: ctx.from.id },
       {
         $set: {
           coordinates: {
-            longitude: longitude,
-            latitude: latitude,
+            latitude: ctx.message.location.latitude,
+            longitude: ctx.message.location.longitude,
+            timezone: userTimezone,
           },
         },
       },
     );
 
-    await ctx.reply('Ваши координаты обновлены. Спасибо!');
-  } else {
-    await ctx.reply('Пользователь не найден в базе данных. Пожалуйста, зарегистрируйтесь сначала.');
-  }
+    // Сбрасываем инфомрацию о сессии, чтобы при первой отправке локации, пользователю не отправлялась текущая погода
+    ctx.session.isRegistering = false;
 
-  const url = `https://api.weatherbit.io/v2.0/current?lat=${ctx.message.location.latitude}&lon=${ctx.message.location.longitude}&key=${process.env.WEATHERBIT_API_KEY}`;
-
-  const data = await axios
-    .get(url)
-    .then((res) => {
-      return res.data.data[0];
-    })
-    .catch((err) => {
-      console.log(err);
-    });
-
-  if (data) {
-    const city = data.city_name;
-    const temp = data.temp;
-    const app_temp = data.app_temp;
-    const country = data.country_code;
-    const timezone = data.timezone;
-    const pressure = data.pres;
-    const windSpeed = data.wind_spd;
-    const weatherStatus = getWeatherDescriptionRus(data.weather.code);
-
-    const localTime = moment().tz(timezone).format('DD.MM.YYYY HH:mm');
-    // Преобразуем время из UTC в локальное время
-    const sunriseLocal = moment.utc(data.sunrise, 'HH:mm').tz(timezone).format('HH:mm');
-    const sunsetLocal = moment.utc(data.sunset, 'HH:mm').tz(timezone).format('HH:mm');
-
-    const messageParts = [
-      `Погода в ${city}, ${country} на ${localTime}:`,
-      weatherStatus,
-      `Температура: ${temp} °C`,
-      `Ощущается как: ${app_temp} °C`,
-      `Восход солнца: ${sunriseLocal}`,
-      `Закат солнца: ${sunsetLocal}`,
-      `Давление: ${pressure} мбар`,
-      `Скорость ветра: ${windSpeed} км/ч`,
-    ];
-
-    await ctx.reply(messageParts.join('\n'));
+    await ctx.reply(`Ваше местоположение сохранено`);
+  } else if (!ctx.session.isRegistering) {
+    await ctx.reply(
+      'Для получения инфомрации о текущей погоде на текущее время, воспользуйтесь командой /current',
+    );
+  } else if (!db) {
+    await ctx.reply('База данных сейчас не доступна, попробуйте позже...');
   }
 });
-
+// Слушатель отправления любых сообщений пользователя
 WeatherBot.on('message', async (ctx) => {
   await ctx.reply('Я тебя не понимаю, попробуй выбрать что-нибудь из списка команд...');
 });
-
+// Обработчик ошибок
 WeatherBot.catch((err) => {
   const ctx = err.ctx;
   console.error(`Error while handling update ${ctx.update.update_id}:`);
@@ -206,6 +219,36 @@ WeatherBot.catch((err) => {
     console.error('Could not contact Telegram:', e);
   } else {
     console.error('Unknown error:', e);
+  }
+});
+// Планировщик отправления прогноза в 08:00 утра.
+cron.schedule('0 * * * *', async () => {
+  if (db) {
+    console.log('Проверяем пользователей на отправку прогноза...');
+    const usersCollection = db.collection('users');
+    const users = await usersCollection.find({ subscription: true }).toArray();
+
+    const currentUTC = moment.utc();
+
+    for (const user of users) {
+      const userLocalTime = currentUTC.tz(user.coordinates.timezone);
+
+      if (userLocalTime.hour() === 8 && userLocalTime.minute() === 0) {
+        const data = await getData(user.coordinates.longitude, user.coordinates.latitude);
+
+        if (data) {
+          const weather = getWeather(data);
+
+          try {
+            await WeatherBot.api.sendMessage(user.tg_chat_id, weather.join('\n'));
+          } catch (err) {
+            console.error(`Не удалось отправить сообщение пользователю ${user.tg_chat_id}: ${err}`);
+          }
+        }
+      }
+    }
+  } else {
+    await ctx.reply('База данных сейчас не доступна, попробуйте позже...');
   }
 });
 

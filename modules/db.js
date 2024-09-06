@@ -1,5 +1,5 @@
-const { MongoClient } = require('mongodb');
 require('dotenv').config();
+const { MongoClient } = require('mongodb');
 
 // Database
 const MongoDBclient = new MongoClient(process.env.MONGODB_URI);
